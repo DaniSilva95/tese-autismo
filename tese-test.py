@@ -26,7 +26,7 @@ from rpy2.robjects.packages import importr
 
 stats = importr('stats')
 
-from scipy import stats, interp
+from scipy import stats, interp,spatial
 from sklearn import svm, datasets, linear_model
 from sklearn.linear_model import LogisticRegression, LinearRegression
 from sklearn.ensemble import RandomForestClassifier
@@ -34,6 +34,7 @@ from sklearn.metrics import confusion_matrix, accuracy_score, roc_curve, auc
 from sklearn.model_selection import train_test_split
 from imblearn.under_sampling import RandomUnderSampler
 import statsmodels.api as sm
+from sklearn.ensemble import RandomForestRegressor
 
 mydata = pd.read_csv('clean_data_v2.csv', sep=';', na_values=[' '])
 mydata = mydata.drop(['N Processo'],axis=1)
@@ -92,6 +93,7 @@ correlation.values[[np.arange(len(correlation))]*2] = np.NaN  # substitui a diag
 
 correlation = correlation.fillna(0)
 
+
 quantitativas_iniciais = ['Idade paterna','Idade materna','Primeiras palavras','Primeiras Frases','Marcha','Cont Esf Diurno','Cont Esf Nocturno','Latest_SCQ_MCHAT_Date']
 
 for k in range(len(position_nan)):
@@ -106,7 +108,6 @@ for k in range(len(position_nan)):
     position_var = [x for x in position_var if x not in position_nan]
 
     if position_nan[k] in quantitativas_iniciais:
-        print 'quantitativas----', position_nan[k], '----'
 
         features_train = features[~features[position_nan[k]].isnull()]  # separa as linhas da matriz total de dados que não tenham missings - na variável com missing e em todas
         features_test = features[features[position_nan[k]].isnull()]  # separa as linhas da matriz total de dados que tenham missings - na variável com missing e em todas
@@ -133,17 +134,23 @@ for k in range(len(position_nan)):
         moda = features[position_nan[k]].mode()
         features_pred[position_nan[k]] = features_pred[position_nan[k]].fillna(moda[0])
 
+features_pred['Grupo'] = new_data['Grupo']
+
+
 
 # ##############################################################################################
 #                          SELEÇÃO DE FEATURES
 # ##############################################################################################
 
+# ------------------------------------------------------------------------------------------
+#                TESTES ESTATISTICOS
+# -----------------------------------------------------------------------------------------
 
 all = features_pred.columns.tolist()
 quantitativas = [x for x in quantitativas_iniciais if x in all]
 qualitativas = [x for x in all if x not in quantitativas]
 
-features_pred['Grupo'] = new_data['Grupo']
+
 training_features= features_pred.copy()
 
 features_0 = features_pred.loc[features_pred['Grupo'] == 0]
@@ -181,28 +188,23 @@ for i in qualitativas:
     res = stats.fisher_test(m)
     p_value[i] = (float("{0:.19f}".format(res[0][0])))
 
+    # Frequência relativa
     for j in freq_absoluta['Grupo 0']:
-        # print j
-        # print freq_absoluta['Grupo 0'].sum()
         freq_rel_0.append(float("{0:.2f}".format( ( j*1.0 / (freq_absoluta['Grupo 0'].sum()) ) * 100)))
-        # print 'freq_rel', freq_rel_0
 
     freq_relativa['Grupo 0'] = freq_rel_0
 
     for j in freq_absoluta['Grupo 1']:
-        # print j
-        # print freq_absoluta['Grupo 1'].sum()
         freq_rel_1.append(float("{0:.2f}".format( ( j*1.0 / (freq_absoluta['Grupo 1'].sum()) ) * 100)))
-        # print 'freq_rel', freq_rel_1
 
     freq_relativa['Grupo 1'] = freq_rel_1
 
-    ################### Elimnar vairaveis com o p>0.05
-    if p_value.loc['p-value', i] < 0.05:
+    # Elimnar vairaveis com o p>0.05
+    if p_value.loc['p-value', i] > 0.05:
+        print p_value.loc['p-value', i]
         position_del.append(i)
-    else:  # Elimina o conteudo das células dos individuos correspondentes às colunas das condiçoes contrarias do if anterior
+        print 'eliminada p > 0.05 - ', i
         training_features = training_features.drop(i, axis=1)
-        print 'eliminada p<-0.05 - ', i
 
 mediana = pd.DataFrame(index=['Grupo 0', 'Grupo 1'])
 percentil_25 = pd.DataFrame(index=['Grupo 0', 'Grupo 1'])
@@ -227,120 +229,456 @@ for i in quantitativas:
 
     # VERIFICAR NORMALIDADE - TEST SHAPIRO WILK
     from scipy import stats
-    shapiro_test[i] = [stats.shapiro(features_0[i])[1],stats.shapiro(features_1[i])[1]]  # o 1 corresponde ao p-value porque os outputs do shapiro sao (W : float, p-value : float)
+    shapiro_test[i] = [stats.shapiro(features_0[i])[1], stats.shapiro(features_1[i])[1]]  # o 1 corresponde ao p-value porque os outputs do shapiro sao (W : float, p-value : float)
 
     if shapiro_test.loc['Grupo 0', i] > 0.05 and shapiro_test.loc['Grupo 1', i] > 0.05:  # Verificar se é Normalmente distribuida
 
         levene[i] = [stats.levene(features_0[i], features_1[i], center='mean')[1]]
 
-        if levene.loc['Result',i] < 0.05:
+        if levene.loc['Result', i] < 0.05:
             p_value[i] = stats.ttest_ind(features_0[i], features_1[i], equal_var=False)[1]  # TESTE T-STUDENT
-            print 'n individuos diferentes- ',i
         else:
             p_value[i] = stats.ttest_ind(features_0[i], features_1[i])[1]
-            print 'n individuos iguais- ',i
 
     else:
-        p_value[i] = stats.mannwhitneyu(features_0[i], features_1[i], use_continuity=False,alternative='two-sided')[1]  # TESTE MANN WHITNEY
+        p_value[i] = stats.mannwhitneyu(features_0[i], features_1[i], use_continuity=False, alternative='two-sided')[1]  # TESTE MANN WHITNEY
 
-    if p_value.loc['p-value', i] < 0.05:
+    if p_value.loc['p-value', i] > 0.05:
         position_del.append(i)
-    else:  # Elimina o conteudo das células dos individuos correspondentes às colunas das condiçoes contrarias do if anterior
+        print 'eliminada p > 0.05 - ', i
         training_features = training_features.drop(i, axis=1)
-        print 'eliminada p<-0.05 - ', i
 
+
+var_met1 = pd.DataFrame(list(training_features.columns.values))
 
 # ------------------------------------------------------------------------------------------
 #                TESTE AIC   e    BIC
 # -----------------------------------------------------------------------------------------
 
-sorted_aic = pd.DataFrame()
-sorted_bic = pd.DataFrame()
+Y = pd.DataFrame(features_pred['Grupo'])
+Y = Y.values
+Y = Y.astype(float)
 
-for i in training_features.loc[:, training_features.columns != 'Grupo']:
-    print i
+sorted_aic1 = pd.DataFrame()
+sorted_bic1 = pd.DataFrame()
+sorted_aic2 = pd.DataFrame()
+sorted_bic2 = pd.DataFrame()
 
-    imp_features = training_features.drop(i, axis=1)
+for i in features_pred.loc[:, features_pred.columns != 'Grupo']:
 
-    ########### outra forma pela regressao logistica
-    #model = LogisticRegression()
+    X = features_pred.drop('Grupo', axis=1)
 
-    XX = training_features[i] # imp_features.loc[:, imp_features.columns != 'Grupo']
-    XX = sm.add_constant(XX)
-    # Train the model using the training sets
+    X = X.drop(i, axis=1)
+    X = sm.add_constant(X)
 
-    model = sm.OLS(imp_features['Grupo'], XX).fit()
+    X= X.values
+    X = X.astype(float)
 
-    # model.summary()
+    model = sm.OLS(Y, X).fit()
 
-    sorted_aic[i] = [model.__getattribute__('aic')]
-    sorted_bic[i] = [model.__getattribute__('bic')]
+    sorted_aic1[i] = [model.__getattribute__('aic')]
+    sorted_bic1[i] = [model.__getattribute__('bic')]
 
-    print 'aic- ', model.__getattribute__('aic')
-    print 'bic- ', model.__getattribute__('bic')
+    #sorted_aic2[i] = [m1.fit().aic]
+    #sorted_bic2[i] = [m1.fit().bic]
 
+sorted_aic1 = sorted_aic1.transpose()
+sorted_bic1 = sorted_bic1.transpose()
+#sorted_aic2 = sorted_aic2.transpose()
+#sorted_bic2 = sorted_bic2.transpose()
 
-########### outra forma pela regressao logistica mas dá erro no mchat15
-    if i == 'MCHAT15':
-        continue
-    XX = training_features[i]
-    XX = XX.astype('float64')
-    YY = imp_features['Grupo'].astype('float64')
+sorted_aic1 = sorted_aic1.sort_values(by=[0])
+sorted_bic1 = sorted_bic1.sort_values(by=[0])
 
-    m1 = sm.Logit(YY, XX)
+print sorted_aic1.iloc[0:10].index.values
+print sorted_bic1.iloc[0:10].index.values
+print sorted_aic1.iloc[0:10]
+print sorted_bic1.iloc[0:10]
+#sorted_aic2 = sorted_aic2.sort_values(by=[0])
+#sorted_bic2 = sorted_bic2.sort_values(by=[0])
 
-    m1.fit()
-
-    sorted_aic[i] = [m1.fit().aic]
-    sorted_bic[i] = [m1.fit().bic]
-
-    print 'aic- ', m1.fit().aic
-    print 'bic- ', m1.fit().bic
-
-
-####### https://github.com/UBC-MDS/RegscorePy
-    yy = training_features[i].tolist()
-    yy = map(float, yy)
-    yypred = training_features['Grupo'].tolist()
-    yypred = map(float, yypred)
-
-    print aic.aic(yy, yypred, 1)
-    print bic.bic(yy, yypred, 1)
+#print sorted_aic2.iloc[0:10].index.values
+#print sorted_bic2.iloc[0:10].index.values
 
 
-
-
-sorted_aic = sorted_aic.transpose()
-sorted_bic = sorted_bic.transpose()
-
-sorted_aic = sorted_aic.sort_values(by=[0], ascending=False)
-sorted_bic = sorted_bic.sort_values(by=[0], ascending=False)
-
-print sorted_aic
-print sorted_bic
-
+num_vars = len(features_pred.iloc[0]) -1
+num_obs = len(features_pred)
 fig = plt.figure(figsize=(8,5))
-plt.subplot(211)
-sing_vals = np.arange(len(sorted_aic)) + 1
-plt.plot(sing_vals,sorted_aic, 'ro-', linewidth=2)
-plt.subplot(212)
-sing_vals1 = np.arange(len(sorted_bic)) + 1
-plt.plot(sing_vals1,sorted_bic, 'ro-', linewidth=2)
-plt.title('Scree Plot')
-plt.xlabel('Principal Component')
+sing_vals = np.arange(num_vars) + 1
+plt.plot(sing_vals, sorted_aic1, 'ro-', linewidth=2)
+plt.title('Scree Plot - AIC')
+plt.xlabel('Feature')
 plt.ylabel('Eigenvalue')
+plt.show()
+
+num_vars = len(features_pred.iloc[0]) -1
+num_obs = len(features_pred)
+fig = plt.figure(figsize=(8,5))
+sing_vals = np.arange(num_vars) + 1
+plt.plot(sing_vals, sorted_bic1, 'ro-', linewidth=2)
+plt.title('Scree Plot - BIC')
+plt.xlabel('Feature')
+plt.ylabel('Eigenvalue')
+plt.show()
+
+
+
+rf = RandomForestRegressor()
+
+X = features_pred.drop('Grupo', axis=1)
+X = X.drop(i, axis=1)
+X = sm.add_constant(X)
+X = X.values
+X = X.astype(float)
+X = pd.DataFrame(X)
+
+Y = pd.DataFrame(features_pred['Grupo'])
+Y = Y.values
+Y = Y.astype(float)
+
+rf.fit(X, Y)
+
+y_hat = model.predict(X)
+resid = Y - y_hat
+sse = sum(resid**2)
+AIC= 2 * len(X.columns) - 2 * np.log(sse)
+
+print AIC
+
+
+
+
+# ------------------------------------------------------------------------------------------
+#                Recursive Feature Elimination - LINEAR REGRESSION
+# -----------------------------------------------------------------------------------------
+
+Y = pd.DataFrame(features_pred['Grupo'])
+X = features_pred.drop(['Grupo'], axis=1)
+names = X.columns.values
+
+from sklearn.feature_selection import RFE, RFECV
+from sklearn.linear_model import LinearRegression
+
+lr = LinearRegression()
+rfe = RFE(lr, n_features_to_select=1)
+rfe.fit(X, Y)
+
+print "Features sorted by their rank:"
+print sorted(zip(map(lambda x: round(x, 4), rfe.ranking_), names))
+
+
+# ------------------------------------------------------------------------------------------
+#                Recursive Feature Elimination - LOGISTIC REGRESSION
+# -----------------------------------------------------------------------------------------
+Y = pd.DataFrame(features_pred['Grupo'])
+X = features_pred.drop(['Grupo'], axis=1)
+names = X.columns.values
+
+model = LogisticRegression()
+
+rfe = RFE(model, 1)
+fit = rfe.fit(X, Y)
+
+print sorted(zip(map(lambda x: round(x, 4), fit.ranking_), names))
+print fit.ranking_
+print names
+# ------------------------------------------------------------------------------------------
+#                Recursive Feature Elimination - SVC
+# -----------------------------------------------------------------------------------------
+
+from sklearn.svm import LinearSVC
+
+svm = LinearSVC()
+
+rfe = RFE(svm, 10)
+rfe = rfe.fit(X, Y)
+
+print X.iloc[:, rfe.support_].columns.values
+
+
+# ------------------------------------------------------------------------------------------
+#                Recursive Feature Elimination - SVM
+# -----------------------------------------------------------------------------------------
+
+Y = pd.DataFrame(features_pred['Grupo'])
+X = features_pred.drop(['Grupo'], axis=1)
+names = X.columns.values
+Y= np.ravel(Y)
+
+from sklearn.feature_selection import RFE
+from sklearn.svm import SVR
+
+svm = SVR(kernel="linear")
+
+rfe = RFE(svm, 1)
+rfe = rfe.fit(X, Y)
+
+print rfe.support_
+print rfe.ranking_
 
 
 
 
 
 
+# ------------------------------------------------------------------------------------------
+#               RANDOM FOREST - Mean decrease impurity
+# -----------------------------------------------------------------------------------------
+
+Y = pd.DataFrame(features_pred['Grupo'])
+X = features_pred.drop(['Grupo'], axis=1)
+
+rf = RandomForestRegressor(n_estimators=20, max_features=68)
+rf.fit(X, Y);
+print "Scores for X0, X1, X2:", map(lambda x:round (x,4), rf.feature_importances_)
+
+sorted_rand = sorted(rf.feature_importances_, reverse=True)
+
+print X.iloc[:, rf.feature_importances_[:] == sorted_rand[0]].columns.values[0]
+print X.iloc[:, rf.feature_importances_[:] == sorted_rand[1]].columns.values[0]
+print X.iloc[:, rf.feature_importances_[:] == sorted_rand[2]].columns.values[0]
+print X.iloc[:, rf.feature_importances_[:] == sorted_rand[3]].columns.values[0]
+print X.iloc[:, rf.feature_importances_[:] == sorted_rand[4]].columns.values[0]
+print X.iloc[:, rf.feature_importances_[:] == sorted_rand[5]].columns.values[0]
+print X.iloc[:, rf.feature_importances_[:] == sorted_rand[6]].columns.values[0]
+print X.iloc[:, rf.feature_importances_[:] == sorted_rand[7]].columns.values[0]
+print X.iloc[:, rf.feature_importances_[:] == sorted_rand[8]].columns.values[0]
+print X.iloc[:, rf.feature_importances_[:] == sorted_rand[9]].columns.values[0]
+print sorted_rand[0:10]
+
+num_vars = len(features_pred.iloc[0]) -1
+num_obs = len(features_pred)
+fig = plt.figure(figsize=(8,5))
+sing_vals = np.arange(num_vars) + 1
+plt.plot(sing_vals, sorted_rand, 'ro-', linewidth=2)
+plt.title('Scree Plot - RANDOM FOREST - Mean decrease impurity')
+plt.xlabel('Feature')
+plt.ylabel('Eigenvalue')
+plt.show()
+
+# ------------------------------------------------------------------------------------------
+#               RANDOM FOREST - Mean decrease accuracy
+# -----------------------------------------------------------------------------------------
+Y = pd.DataFrame(features_pred['Grupo'])
+Y=Y.values
+X = features_pred.drop(['Grupo'], axis=1)
+X = X.values
+names = features_pred.drop(['Grupo'], axis=1).columns.values
+
+from sklearn.model_selection import ShuffleSplit
+from sklearn.metrics import r2_score
+from collections import defaultdict
+
+rf = RandomForestRegressor()
+scores = defaultdict(list)
+
+rs = ShuffleSplit(n_splits=len(X), test_size=.3, random_state=0)
+rs.get_n_splits(X)
+
+print(rs)
+
+for train_idx, test_idx in rs.split(X):
+
+    X_train, X_test = X[train_idx], X[test_idx]
+    Y_train, Y_test = Y[train_idx], Y[test_idx]
+    r = rf.fit(X_train, Y_train)
+    acc = r2_score(Y_test, rf.predict(X_test))
+    for i in range(X.shape[1]):
+        X_t = X_test.copy()
+        np.random.shuffle(X_t[:, i])
+        shuff_acc = r2_score(Y_test, rf.predict(X_t))
+        scores[names[i]].append((acc - shuff_acc) / acc)
+
+print "Features sorted by their score:"
+print sorted([(round(np.mean(score), 4), feat) for feat, score in scores.items()], reverse=True)
+
+# ------------------------------------------------------------------------------------------
+#                LINEAR REGRESSION
+# -----------------------------------------------------------------------------------------
+
+# Fiz a escala da matriz
+# Deu valores muito pequenos
+# Variaveis diferenes dos outros métodos
+
+from sklearn import preprocessing
+
+Y = pd.DataFrame(features_pred['Grupo'])
+X = features_pred.drop(['Grupo'], axis=1)
+
+linear = pd.DataFrame()
+
+lr = LinearRegression()
+linear = lr.fit(X, Y)
+
+linear = linear.coef_
+linear = np.absolute(linear)
+
+sorted_linear = sorted(linear[0], reverse=True)
+a=linear[:] == sorted_linear[0]
+print X.iloc[:, np.where(a[0])[0]].columns.values[0]
+a=linear[:] == sorted_linear[1]
+print X.iloc[:, np.where(a[0])[0]].columns.values[0]
+a=linear[:] == sorted_linear[2]
+print X.iloc[:, np.where(a[0])[0]].columns.values[0]
+a=linear[:] == sorted_linear[3]
+print X.iloc[:, np.where(a[0])[0]].columns.values[0]
+a=linear[:] == sorted_linear[4]
+print X.iloc[:, np.where(a[0])[0]].columns.values[0]
+a=linear[:] == sorted_linear[5]
+print X.iloc[:, np.where(a[0])[0]].columns.values[0]
+a=linear[:] == sorted_linear[6]
+print X.iloc[:, np.where(a[0])[0]].columns.values[0]
+a=linear[:] == sorted_linear[7]
+print X.iloc[:, np.where(a[0])[0]].columns.values[0]
+a=linear[:] == sorted_linear[8]
+print X.iloc[:, np.where(a[0])[0]].columns.values[0]
+a=linear[:] == sorted_linear[9]
+print X.iloc[:, np.where(a[0])[0]].columns.values[0]
+a=linear[:] == sorted_linear[10]
+print X.iloc[:, np.where(a[0])[0]].columns.values[0]
+print sorted_linear[0:10]
+num_vars = len(features_pred.iloc[0]) -1
+num_obs = len(features_pred)
+fig = plt.figure(figsize=(8,5))
+sing_vals = np.arange(num_vars) + 1
+plt.plot(sing_vals, sorted_linear, 'ro-', linewidth=2)
+plt.title('Scree Plot - LINEAR REGRESSION')
+plt.xlabel('Feature')
+plt.ylabel('Eigenvalue')
+plt.show()
+
+# ------------------------------------------------------------------------------------------
+#                L2 regularization / Ridge regression
+# -----------------------------------------------------------------------------------------
+
+from sklearn.linear_model import Ridge
+
+ridge = Ridge(alpha=10)
+ridge1 = ridge.fit(X, Y)
+
+sorted_ridge = sorted(ridge1.coef_[0], reverse=True)
+
+a=ridge1.coef_[:] == sorted_ridge[0]
+print X.iloc[:, np.where(a[0])[0]].columns.values[0]
+a=ridge1.coef_[:] == sorted_ridge[1]
+print X.iloc[:, np.where(a[0])[0]].columns.values[0]
+a=ridge1.coef_[:] == sorted_ridge[2]
+print X.iloc[:, np.where(a[0])[0]].columns.values[0]
+a=ridge1.coef_[:] == sorted_ridge[3]
+print X.iloc[:, np.where(a[0])[0]].columns.values[0]
+a=ridge1.coef_[:] == sorted_ridge[4]
+print X.iloc[:, np.where(a[0])[0]].columns.values[0]
+a=ridge1.coef_[:] == sorted_ridge[5]
+print X.iloc[:, np.where(a[0])[0]].columns.values[0]
+a=ridge1.coef_[:] == sorted_ridge[6]
+print X.iloc[:, np.where(a[0])[0]].columns.values[0]
+a=ridge1.coef_[:] == sorted_ridge[7]
+print X.iloc[:, np.where(a[0])[0]].columns.values[0]
+a=ridge1.coef_[:] == sorted_ridge[8]
+print X.iloc[:, np.where(a[0])[0]].columns.values[0]
+a=ridge1.coef_[:] == sorted_ridge[9]
+print X.iloc[:, np.where(a[0])[0]].columns.values[0]
+a=ridge1.coef_[:] == sorted_ridge[10]
+print X.iloc[:, np.where(a[0])[0]].columns.values[0]
+print sorted_ridge[0:10]
+
+num_vars = len(features_pred.iloc[0]) -1
+num_obs = len(features_pred)
+fig = plt.figure(figsize=(8,5))
+sing_vals = np.arange(num_vars) + 1
+plt.plot(sing_vals, sorted_ridge, 'ro-', linewidth=2)
+plt.title('Scree Plot - L2 regularization / Ridge regression')
+plt.xlabel('Feature')
+plt.ylabel('Eigenvalue')
+plt.show()
+
+# ------------------------------------------------------------------------------------------
+#                EXTRA TREES CLASSIFIER
+# -----------------------------------------------------------------------------------------
+Y = pd.DataFrame(features_pred['Grupo'])
+X = features_pred.drop(['Grupo'], axis=1)
+
+sorted_etc = pd.DataFrame()
+
+from sklearn.ensemble import ExtraTreesClassifier
+
+names = X.columns.values
+
+model = ExtraTreesClassifier()
+model.fit(X, Y)
+
+etc = model.feature_importances_
+
+sorted_etc = sorted(etc, reverse=True)
+
+var_met2 = pd.DataFrame(columns=['a'])
+
+a=etc[:] == sorted_etc[0]
+var_met2.loc[len(var_met2)] = X.iloc[:, np.where(a)[0]].columns.values[0]
+a=etc[:] == sorted_etc[1]
+var_met2.loc[len(var_met2)] = X.iloc[:, np.where(a)[0]].columns.values[0]
+a=etc[:] == sorted_etc[2]
+var_met2.loc[len(var_met2)] = X.iloc[:, np.where(a)[0]].columns.values[0]
+a=etc[:] == sorted_etc[3]
+var_met2.loc[len(var_met2)] = X.iloc[:, np.where(a)[0]].columns.values[0]
+a=etc[:] == sorted_etc[4]
+var_met2.loc[len(var_met2)] = X.iloc[:, np.where(a)[0]].columns.values[0]
+a=etc[:] == sorted_etc[5]
+var_met2.loc[len(var_met2)] = X.iloc[:, np.where(a)[0]].columns.values[0]
+a=etc[:] == sorted_etc[6]
+var_met2.loc[len(var_met2)] = X.iloc[:, np.where(a)[0]].columns.values[0]
+a=etc[:] == sorted_etc[7]
+var_met2.loc[len(var_met2)] = X.iloc[:, np.where(a)[0]].columns.values[0]
+a=etc[:] == sorted_etc[8]
+var_met2.loc[len(var_met2)] = X.iloc[:, np.where(a)[0]].columns.values[0]
+a=etc[:] == sorted_etc[9]
+var_met2.loc[len(var_met2)] = X.iloc[:, np.where(a)[0]].columns.values[0]
+a=etc[:] == sorted_etc[10]
+var_met2.loc[len(var_met2)] = X.iloc[:, np.where(a)[0]].columns.values[0]
+
+num_vars = len(features_pred.iloc[0]) -1
+num_obs = len(features_pred)
+fig = plt.figure(figsize=(8,5))
+sing_vals = np.arange(num_vars) + 1
+plt.plot(sing_vals, sorted_etc, 'ro-', linewidth=2)
+plt.title('Scree Plot - EXTRA TREES CLASSIFIER')
+plt.xlabel('Feature')
+plt.ylabel('Eigenvalue')
+plt.show()
+
+class_feat = set(var_met1[0]).intersection(set(var_met2['a']))
+
+class_features = pd.DataFrame()
+
+for i in class_feat:
+    class_features[i] = training_features[i]
+
+for i in training_features:
+    if i == 'Grupo':
+        continue
+    else:
+        if var_met2['a'].str.contains(i).any():
+            print i
+
+        else:
+            print 'eliminada - ', i
+            training_features = training_features.drop(i, axis=1)
 
 
+# ------------------------------------------------------------------------------------------
+#                EXTRA TREES CLASSIFIER
+# -----------------------------------------------------------------------------------------
 
 
+from skfeature.function.similarity_based.reliefF import reliefF
 
+Y = pd.DataFrame(features_pred['Grupo'])
+X = features_pred.drop(['Grupo'], axis=1)
 
+X = X.values
+Y = Y.values
+
+relief = reliefF(X, Y)
 
 
 
@@ -406,7 +744,15 @@ for i in range(100):  # correr 100x
     # print "x_test", len(x_test), x_train
     # print "y_train", len(y_train), y_train
     # print "y_test", len(y_test), y_test
+    x_train = x_train.astype('int')
+    y_train = y_train.astype('int')
+    x_test = x_test.astype('int')
+    y_test = y_test.astype('int')
 
+    x_train = pd.DataFrame(x_train)
+    x_test = pd.DataFrame(x_test)
+    y_train = pd.DataFrame(y_train)
+    y_test = pd.DataFrame(y_test)
     # -----------------------------------------------------------------------------------------------
     #                                     SVM
     # -----------------------------------------------------------------------------------------------
